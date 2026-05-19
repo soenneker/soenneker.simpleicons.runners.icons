@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
@@ -54,7 +55,7 @@ public sealed class FileOperationsUtil : IFileOperationsUtil
             foreach (string svgFile in svgFiles)
             {
                 string targetPath = Path.Combine(targetResourcesDirectory, Path.GetFileName(svgFile));
-                await _fileUtil.Copy(svgFile, targetPath, cancellationToken: cancellationToken);
+                await CopySvgWithoutDimensions(svgFile, targetPath, cancellationToken);
             }
 
             _logger.LogInformation("Copied {Count} SimpleIcons SVG resources from upstream commit {UpstreamCommit}", svgFiles.Count, upstreamCommit);
@@ -101,6 +102,39 @@ public sealed class FileOperationsUtil : IFileOperationsUtil
         string token = GetRequiredEnvironmentVariable("GH__TOKEN");
 
         await _gitUtil.CommitAndPush(targetDirectory, $"Update SimpleIcons from upstream {upstreamCommit[..12]}", token, name, email, cancellationToken);
+    }
+
+    private async ValueTask CopySvgWithoutDimensions(string sourcePath, string targetPath, CancellationToken cancellationToken)
+    {
+        string? svg = await _fileUtil.TryRead(sourcePath, cancellationToken: cancellationToken);
+
+        if (svg is null)
+            throw new FileNotFoundException("Could not read SVG file", sourcePath);
+
+        await _fileUtil.Write(targetPath, RemoveSvgDimensionAttributes(svg), cancellationToken: cancellationToken);
+    }
+
+    private static string RemoveSvgDimensionAttributes(string svg)
+    {
+        int svgStart = svg.IndexOf("<svg", StringComparison.OrdinalIgnoreCase);
+
+        if (svgStart < 0)
+            return svg;
+
+        int svgTagEnd = svg.IndexOf('>', svgStart);
+
+        if (svgTagEnd < 0)
+            return svg;
+
+        string openingTag = svg[svgStart..svgTagEnd];
+        string normalizedOpeningTag = Regex.Replace(openingTag, "\\s+(width|height)=(\"[^\"]*\"|'[^']*'|[^\\s>]+)", "", RegexOptions.IgnoreCase);
+
+        using var builder = new PooledStringBuilder(svg.Length);
+        builder.Append(svg.AsSpan(0, svgStart));
+        builder.Append(normalizedOpeningTag);
+        builder.Append(svg.AsSpan(svgTagEnd));
+
+        return builder.ToString();
     }
 
     private static string GetRequiredEnvironmentVariable(string name)
